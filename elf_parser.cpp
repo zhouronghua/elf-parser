@@ -21,6 +21,8 @@
 // SOFTWARE.
 
 #include "elf_parser.hpp"
+#include <sys/stat.h>
+#include <cstring>
 using namespace elf_parser;
 
 std::vector<section_t> Elf_parser::get_sections() {
@@ -80,23 +82,53 @@ std::vector<symbol_t> Elf_parser::get_symbols() {
     // get headers for offsets
     Elf64_Ehdr *ehdr = (Elf64_Ehdr*)m_mmap_program;
     Elf64_Shdr *shdr = (Elf64_Shdr*)(m_mmap_program + ehdr->e_shoff);
-
+    // get build-id
+    char *build_id_buf = nullptr;
+    std::string buildId;
     // get strtab
     char *sh_strtab_p = nullptr;
-    for(auto &sec: secs) {
-        if((sec.section_type == "SHT_STRTAB") && (sec.section_name == ".strtab")){
-            sh_strtab_p = (char*)m_mmap_program + sec.section_offset;
-            break;
-        }
-    }
-
     // get dynstr
     char *sh_dynstr_p = nullptr;
-    for(auto &sec: secs) {
-        if((sec.section_type == "SHT_STRTAB") && (sec.section_name == ".dynstr")){
-            sh_dynstr_p = (char*)m_mmap_program + sec.section_offset;
-            break;
+    for (auto &sec : secs) {
+      if ((sec.section_type == "SHT_NOTE") &&
+          (sec.section_name == ".note.gnu.build-id")) {
+        build_id_buf =
+            reinterpret_cast<char *>(m_mmap_program) + sec.section_offset;
+
+        Elf64_Nhdr *nhdr64 = reinterpret_cast<Elf64_Nhdr *>(build_id_buf);
+
+        uint64_t n_namesz = nhdr64->n_namesz;
+        uint64_t n_descsz = nhdr64->n_descsz;
+        uint64_t n_type = nhdr64->n_type;
+        char *n_data = build_id_buf + sizeof(Elf64_Nhdr);
+
+        if (std::strcmp(n_data, ELF_NOTE_GNU) == 0 &&
+            n_type == NT_GNU_BUILD_ID) {
+          const char *hex_digits = "0123456789abcdef";
+          unsigned char *build_id;
+
+          build_id = (unsigned char *)n_data + n_namesz;
+          for (int i = 0; i < n_descsz; i++) {
+            buildId.push_back(hex_digits[(build_id[i] >> 4) & 0xf]);
+            buildId.push_back(hex_digits[(build_id[i] >> 0) & 0xf]);
+          }
         }
+      }
+
+      if ((sec.section_type == "SHT_STRTAB") &&
+          (sec.section_name == ".strtab")) {
+        sh_strtab_p =
+            reinterpret_cast<char *>(m_mmap_program) + sec.section_offset;
+      }
+
+      if ((sec.section_type == "SHT_STRTAB") &&
+          (sec.section_name == ".dynstr")) {
+        sh_dynstr_p =
+            reinterpret_cast<char *>(m_mmap_program) + sec.section_offset;
+      }
+      if (build_id_buf && sh_strtab_p && sh_dynstr_p) {
+        break;
+      }
     }
 
     std::vector<symbol_t> symbols;
@@ -127,6 +159,23 @@ std::vector<symbol_t> Elf_parser::get_symbols() {
             symbols.push_back(symbol);
         }
     }
+
+    if (buildId.length() > 0) {
+      /* Look for separate debug info: build-ids */
+      std::string debug_file =
+          std::string("/usr/lib/debug/.build-id/" + buildId.substr(0, 2) + "/" +
+                      buildId.substr(2, std::string::npos) + ".debug");
+
+      if (m_program_path != debug_file) {
+        struct stat buffer;
+        if (stat(debug_file.c_str(), &buffer) == 0) {
+          Elf_parser dp(debug_file.c_str());
+          auto debug_syms = dp.get_symbols();
+          symbols.insert(symbols.end(), debug_syms.begin(), debug_syms.end());
+        }
+      }
+    }
+
     return symbols;
 }
 

@@ -63,10 +63,16 @@ typedef struct {
     std::intptr_t relocation_plt_address;
 } relocation_t;
 
+// Note header for ELF64.
+struct Elf64_Nhdr {
+  Elf64_Word n_namesz;
+  Elf64_Word n_descsz;
+  Elf64_Word n_type;
+};
 
 class Elf_parser {
     public:
-        Elf_parser (std::string &program_path): m_program_path{program_path} {   
+        Elf_parser (const std::string &program_path): m_program_path{program_path} {   
             load_memory_map();
         }
         std::vector<section_t> get_sections();
